@@ -86,13 +86,13 @@ test('格式失败不覆盖有效列表；首次失败不发布；回滚可用',
   c.setUpstream('#EXTM3U\n#EXTINF:-1,B\nbad-url');
   assert.equal((await c.call('/api/sources/ipv4/refresh', 'POST')).json.ok, false);
   assert.deepEqual([...c.kv.values].filter(([key]) => key.startsWith('playlist_')), oldValues);
-  assert.equal((await c.call('/sub/keting/playlist.m3u')).text, SAMPLE);
+  assert.equal((await c.call('/sub/keting/playlist.m3u')).text, exportPlaylist(SAMPLE, 'm3u'));
   assert.equal((await c.source('bad')).json.refresh.ok, false);
   const view = (await c.call('/api/state')).json.sources.find(source => source.id === 'bad'); assert.match(view.status.lastError, /没有有效频道/);
   c.setUpstream(SECOND); await c.call('/api/sources/ipv4/refresh', 'POST');
-  assert.equal((await c.call('/sub/keting/playlist.m3u')).text, SECOND);
+  assert.equal((await c.call('/sub/keting/playlist.m3u')).text, exportPlaylist(SECOND, 'm3u'));
   assert.equal((await c.call('/api/sources/ipv4/rollback', 'POST')).json.ok, true);
-  assert.equal((await c.call('/sub/keting/playlist.m3u')).text, SAMPLE);
+  assert.equal((await c.call('/sub/keting/playlist.m3u')).text, exportPlaylist(SAMPLE, 'm3u'));
 });
 test('自动过滤停用和错误的完整条目，保留有效频道及扩展元数据', () => {
   const mixed = SAMPLE + '#EXTINF:-1,停用\n#https://example.com/off\n#EXTINF:-1,错误协议\nfile:///bad\n#EXTINF:-1,缺少地址\n' + SECOND.split('\n').slice(1).join('\n');
@@ -108,7 +108,7 @@ test('来源含无效条目时自动清理并写入 KV，客户端仅获取有�
   const c = client(); await c.login();
   c.setUpstream(SAMPLE + '#EXTINF:-1,已停用\n#https://example.com/disabled\n');
   const created = await c.source(); assert.equal(created.json.refresh.ok, true); assert.equal(created.json.refresh.removed, 1);
-  await c.subscription(); const response = await c.call('/sub/keting/playlist.m3u'); assert.equal(response.text, SAMPLE);
+  await c.subscription(); const response = await c.call('/sub/keting/playlist.m3u'); assert.equal(response.text, exportPlaylist(SAMPLE, 'm3u'));
   const view = (await c.call('/api/state')).json.sources[0]; assert.equal(view.status.removed, 1); assert.match(view.status.history[0].message, /过滤 1/);
 });
 test('五档有效期从创建时间开始；恰好到期拒绝；永久有效', async () => {
@@ -139,17 +139,17 @@ test('订阅不限制重复请求、HEAD 响应不缓存', async () => {
   const c = client(); await c.login(); await c.source(); await c.subscription();
   for (let i = 0; i < 20; i++) assert.equal((await c.call('/sub/keting/playlist.m3u')).status, 200);
   const head = await c.call('/sub/keting/playlist.m3u', 'HEAD'); assert.equal(head.text, ''); assert.equal(head.headers.get('cache-control'), 'no-store');
-  assert.equal(head.headers.get('content-type'), 'text/plain; charset=utf-8');
+  assert.equal(head.headers.get('content-type'), 'audio/x-mpegurl; charset=utf-8');
   const get = await c.call('/sub/keting/playlist.m3u');
   assert.equal(head.headers.get('content-length'), String(new TextEncoder().encode(get.text).byteLength));
-  assert.equal(get.headers.get('content-type'), 'text/plain; charset=utf-8'); assert.equal(get.text, SAMPLE);
+  assert.equal(get.headers.get('content-type'), 'audio/x-mpegurl; charset=utf-8'); assert.equal(get.text, exportPlaylist(SAMPLE, 'm3u'));
 });
 
 test('订阅兼容 m3u8、CORS、预检与 Range，管理 API 不开放跨域', async () => {
   const c = client(); await c.login(); await c.source();
   const sub = (await c.subscription()).json.subscription;
   const url = '/sub/keting/playlist.m3u8';
-  assert.equal((await c.call(url)).text, SAMPLE);
+  assert.equal((await c.call(url)).text, exportPlaylist(SAMPLE, 'm3u'));
   const preflight = await c.call(url, 'OPTIONS', null, { Origin: 'https://player.example', 'Access-Control-Request-Method': 'GET', 'Access-Control-Request-Headers': 'Range' });
   assert.equal(preflight.status, 204);
   assert.equal(preflight.text, '');
@@ -248,7 +248,7 @@ test('创建直播源无需填写标识，服务器自动生成唯一标识并�
   assert.equal(first.status, 201); assert.equal(second.status, 201);
   const id = first.json.source.id; assert.match(id, /^src_[a-f0-9]{32}$/); assert.notEqual(id, second.json.source.id);
   const sub = await c.call('/api/subscriptions', 'POST', { id: 'keting', name: '客厅', sourceId: id, days: 30 });
-  assert.equal(sub.status, 201); assert.equal((await c.call('/sub/keting/playlist.m3u')).text, SAMPLE);
+  assert.equal(sub.status, 201); assert.equal((await c.call('/sub/keting/playlist.m3u')).text, exportPlaylist(SAMPLE, 'm3u'));
 });
 test('环境变量密码直接登录，优先于旧哈希；兼容旧配置；不泄露密码', async () => {
   const oldHash = await passwordHash('legacy-password-123');
@@ -303,7 +303,7 @@ test('三格式订阅共用频道、禁用与到期控制，HEAD、改名和回�
     const url = '/sub/keting/playlist.' + format;
     const result = await c.call(url); assert.equal(result.status, 200);
     assert.deepEqual(playlistChannels(parsePlaylist(result.text, format).text), original);
-    assert.match(result.headers.get('content-type'), format === 'json' ? /application\/json/ : /text\/plain/);
+    assert.match(result.headers.get('content-type'), format === 'json' ? /application\/json/ : format === 'm3u' ? /audio\/x-mpegurl/ : /text\/plain/);
     assert.equal(result.headers.get('cache-control'), 'no-store');
     const head = await c.call(url, 'HEAD'); assert.equal(head.status, 200); assert.equal(head.text, '');
   }

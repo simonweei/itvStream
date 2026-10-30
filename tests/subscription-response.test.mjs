@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { exportPlaylist } from '../lib/m3u.js';
 import { subscriptionResponse } from '../lib/subscription-response.js';
 
-const text = '#EXTM3U\n#EXTINF:-1 group-title="央视",中文频道\nhttps://example.com/live.m3u8\n';
+const source = '#EXTM3U\n#EXTINF:-1 group-title="央视",中文频道\nhttps://example.com/live.m3u8\n';
+const text = exportPlaylist(source, 'm3u');
 const bytes = new TextEncoder().encode(text);
 const request = (headers = {}, method = 'GET') => new Request('https://example.com/sub/test/playlist.m3u', { method, headers });
 

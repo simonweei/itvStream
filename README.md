@@ -62,6 +62,10 @@ KV 最终一致，更新记录与配置在不同节点可能延迟约一分钟�
 
 ## 机顶盒订阅兼容性
 
+M3U/M3U8 订阅按 [参考列表](https://live.zbds.top/tv/iptv4.m3u) 的频道结构输出：`#EXTM3U` 开头，每个频道包含 `#EXTINF:-1 tvg-name="频道名" tvg-id="EPG 标识" tvg-logo="台标网址" group-title="分组", 频道名`，下一行为播放地址。保留来源已有的 EPG 头、映射、台标和播放器参数；缺少的 EPG 标识、台标及分组留空。TXT、JSON 来源也统一转成该结构。M3U/M3U8 响应使用 `audio/x-mpegurl; charset=utf-8`；已有订阅在部署新版后直接生效，无需重建。
+
+Cloudflare 部署使用本仓库源码；EdgeOne 部署使用包含相同格式修复的 [新版完整源码包](edgeone-m3u-format-20261031.zip)，继续复用原有 KV 绑定和环境变量。
+
 所有订阅支持 GET、HEAD 和 OPTIONS；HEAD 返回对应完整文件的 UTF-8 字节长度，不发送正文。`playlist.m3u8` 是 `playlist.m3u` 的等价地址，共用禁用、到期及改名控制，现有链接继续有效。
 
 订阅下载支持单段字节 Range（206 / 416）和跨域读取，包含错误响应；管理 API 的登录与跨域限制保持原有设置。不支持的多段 Range 返回完整文件；带 If-Range 时返回完整文件，避免把不同版本片段拼接。

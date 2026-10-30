@@ -227,6 +227,20 @@ test('KV 无效绑定与 list 异常返回具体诊断，日志不泄露环境�
   assert.match(state.json.errorId, /^[a-f0-9]{12}$/); assert.equal(logs.join().includes(env.CRON_SECRET), false);
   assert.equal(state.text.includes(env.CRON_SECRET), false);
 });
+test('list 当日额度耗尽返回准确提示，已有订阅和会话读取不依赖 list', async t => {
+  t.mock.method(console, 'error', () => {});
+  const kv = new MemoryKV(), c = client(kv);
+  await c.login(); await c.source(); await c.subscription();
+  kv.list = async () => { throw new Error('KV list() limit exceeded for the day.'); };
+  const state = await c.call('/api/state');
+  assert.equal(state.status, 503);
+  assert.equal(state.json.code, 'KV_LIST_QUOTA_EXCEEDED');
+  assert.match(state.json.error, /今日额度已用完/);
+  assert.match(state.json.error, /08:00/);
+  assert.equal((await c.call('/api/session')).status, 200);
+  assert.equal((await c.call('/sub/keting/playlist.m3u')).status, 200);
+});
+
 test('线上回归：空列表省略 keys 时，空控制台、新建直播源与订阅都正常', async () => {
   const kv = new MemoryKV(), originalList = kv.list.bind(kv);
   kv.list = async options => { const page = await originalList(options); if (!page.keys.length) { delete page.keys; } return page; };

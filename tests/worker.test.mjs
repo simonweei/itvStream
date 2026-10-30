@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
 import { runDueUpdates } from '../lib/server.js';
+import { readFile } from 'node:fs/promises';
+import { newSession, readSession } from '../lib/auth.js';
 
 class KV {
   values = new Map();
@@ -11,6 +13,28 @@ class KV {
   async list({ prefix }) { return { keys: [...this.values.keys()].filter(k => k.startsWith(prefix)).map(name => ({ name })), list_complete: true }; }
 }
 const key = (prefix, id) => prefix + '_' + Buffer.from(id).toString('hex');
+
+test('默认 Cron 每 10 分钟执行，全天单页扫描共 145 次；会话过期立即失效且每天清理', async () => {
+  const config = JSON.parse(await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8'));
+  assert.deepEqual(config.triggers.crons, ['*/10 * * * *']);
+  const kv = new KV(), start = 10 * 86400000, counts = { source_: 0, session_: 0 };
+  const originalList = kv.list.bind(kv);
+  kv.list = async options => { counts[options.prefix]++; return originalList(options); };
+  const env = { SESSION_SECRET: 's'.repeat(64) };
+  const { session, token } = await newSession(env, start);
+  await kv.put(`session_${session.id}`, JSON.stringify(session));
+  await kv.put('session_expired', JSON.stringify({ id: 'expired', expiresAt: start - 1 }));
+  for (let tick = 0; tick < 144; tick++) {
+    await runDueUpdates(kv, env, { now: start + tick * 10 * 60000, fetcher: () => assert.fail('无来源时不应拉取') });
+  }
+  assert.deepEqual(counts, { source_: 144, session_: 1 });
+  assert.equal(await kv.get('session_expired'), null);
+  assert.ok(await kv.get(`session_${session.id}`));
+  assert.equal(await readSession(new Request('https://example.com/api/session', { headers: { Cookie: `live_session=${token}` } }), env, kv, session.expiresAt), null);
+  await runDueUpdates(kv, env, { now: start + 86400000 });
+  assert.deepEqual(counts, { source_: 145, session_: 2 });
+  assert.equal(await kv.get(`session_${session.id}`), null);
+});
 test('内置后台按各源间隔执行，无 HTTP 调度地址或密钥；未到期和停用源不更新', async () => {
   const kv = new KV(), now = 10 * 86400000, attempted = now - 86400000;
   for (const [id, days, enabled] of [['daily', 1, true], ['weekly', 7, true], ['disabled', 1, false]]) {

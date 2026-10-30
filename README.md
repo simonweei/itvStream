@@ -59,3 +59,13 @@ npm run check
 KV 最终一致，更新记录与配置在不同节点可能延迟约一分钟。该应用适合单管理员和一个后台执行器，不保证跨节点事务或原子锁。
 
 参考：[Workers 静态资源](https://developers.cloudflare.com/workers/static-assets/)、[Cron Triggers](https://developers.cloudflare.com/workers/configuration/cron-triggers/)。
+
+## 机顶盒订阅兼容性
+
+所有订阅支持 GET、HEAD 和 OPTIONS；HEAD 返回对应完整文件的 UTF-8 字节长度，不发送正文。`playlist.m3u8` 是 `playlist.m3u` 的等价地址，共用禁用、到期及改名控制，现有链接继续有效。
+
+订阅下载支持单段字节 Range（206 / 416）和跨域读取，包含错误响应；管理 API 的登录与跨域限制保持原有设置。不支持的多段 Range 返回完整文件；带 If-Range 时返回完整文件，避免把不同版本片段拼接。
+
+部署后应对实际域名验证 GET / HEAD 的 Content-Length 一致、Range 返回 206，再在机顶盒重新加载订阅。源列表相同不代表所有设备都能连接域名或播放其中每条直播流。
+
+EdgeOne 独立项目的同版本修复见 [EdgeOne 完整源码包](edgeone-subscription-fix-20261031.zip)。该包保留 EdgeOne 原生定时任务和部署结构；在 EdgeOne 项目中部署时继续使用原有 KV 绑定及环境变量。本仓库根目录仍是 Cloudflare Worker 项目。

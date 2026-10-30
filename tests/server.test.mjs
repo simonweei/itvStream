@@ -141,7 +141,36 @@ test('订阅不限制重复请求、HEAD 响应不缓存', async () => {
   const head = await c.call('/sub/keting/playlist.m3u', 'HEAD'); assert.equal(head.text, ''); assert.equal(head.headers.get('cache-control'), 'no-store');
   assert.equal(head.headers.get('content-type'), 'text/plain; charset=utf-8');
   const get = await c.call('/sub/keting/playlist.m3u');
+  assert.equal(head.headers.get('content-length'), String(new TextEncoder().encode(get.text).byteLength));
   assert.equal(get.headers.get('content-type'), 'text/plain; charset=utf-8'); assert.equal(get.text, SAMPLE);
+});
+
+test('订阅兼容 m3u8、CORS、预检与 Range，管理 API 不开放跨域', async () => {
+  const c = client(); await c.login(); await c.source();
+  const sub = (await c.subscription()).json.subscription;
+  const url = '/sub/keting/playlist.m3u8';
+  assert.equal((await c.call(url)).text, SAMPLE);
+  const preflight = await c.call(url, 'OPTIONS', null, { Origin: 'https://player.example', 'Access-Control-Request-Method': 'GET', 'Access-Control-Request-Headers': 'Range' });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.text, '');
+  assert.equal(preflight.headers.get('access-control-allow-origin'), '*');
+  assert.match(preflight.headers.get('access-control-allow-headers'), /Range/);
+  const range = await c.call(url, 'GET', null, { Range: 'bytes=0-6', Origin: 'https://player.example' });
+  assert.equal(range.status, 206); assert.equal(range.text, '#EXTM3U');
+  assert.equal(range.headers.get('access-control-allow-origin'), '*');
+  assert.equal((await c.call('/api/state')).headers.has('access-control-allow-origin'), false);
+  assert.equal((await c.call(url, 'POST')).status, 405);
+  await c.call('/api/subscriptions/keting', 'PUT', { ...sub, enabled: false });
+  for (const method of ['GET', 'HEAD']) {
+    const denied = await c.call(url, method, null, { Range: 'bytes=0-6' });
+    assert.equal(denied.status, 403);
+    assert.equal(denied.headers.get('access-control-allow-origin'), '*');
+    if (method === 'HEAD') assert.equal(denied.text, '');
+  }
+  await c.call('/api/subscriptions/keting', 'PUT', { ...sub, enabled: true });
+  c.setTime(sub.expiresAt);
+  assert.equal((await c.call(url)).status, 410);
+  assert.equal((await c.call('/sub/missing/playlist.m3u8')).status, 404);
 });
 test('调度密钥、间隔及停用源；最多三源每轮', async () => {
   const c = client(); await c.login(); for (const id of ['ipv4', 'b', 'c', 'd']) await c.source(id);

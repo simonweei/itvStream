@@ -68,4 +68,6 @@ KV 最终一致，更新记录与配置在不同节点可能延迟约一分钟�
 
 部署后应对实际域名验证 GET / HEAD 的 Content-Length 一致、Range 返回 206，再在机顶盒重新加载订阅。源列表相同不代表所有设备都能连接域名或播放其中每条直播流。
 
-EdgeOne 独立项目的同版本修复见 [EdgeOne 完整源码包](edgeone-subscription-fix-20261031.zip)。该包保留 EdgeOne 原生定时任务和部署结构；在 EdgeOne 项目中部署时继续使用原有 KV 绑定及环境变量。本仓库根目录仍是 Cloudflare Worker 项目。
+EdgeOne 独立项目的同版本修复见 [EdgeOne 完整源码包](edgeone-subscription-fix-20261031-v2.zip)。该包保留 EdgeOne 原生定时任务和部署结构；在 EdgeOne 项目中部署时继续使用原有 KV 绑定及环境变量。本仓库根目录仍是 Cloudflare Worker 项目。
+
+EdgeOne 第二版专门适配 HEAD：平台入口用完整 GET 表示构造响应，供平台计算正确长度，由原始 HEAD 的 HTTP 发送层省略正文。变更可查看 [第二版补丁](patches/edgeone-head-response-v2.patch)。34 项本地测试及构建通过，仍需部署到 EdgeOne 后验证真实 HEAD 长度及无正文；Cloudflare Worker 代码保持原样。

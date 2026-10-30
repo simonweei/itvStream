@@ -1,0 +1,90 @@
+--- a/edge-functions/sub/[[path]].js
++++ b/edge-functions/sub/[[path]].js
+@@ -5 +5,13 @@
+-  return handle(context, hasKV(injected) ? injected : context.env?.LIVE_KV);
++  const kv = hasKV(injected) ? injected : context.env?.LIVE_KV;
++  if (context.request.method === 'HEAD') {
++    // EdgeOne emits Content-Length: 0 for a null Response body, even when the
++    // handler supplies the GET length. Keep the complete representation until
++    // the platform's HTTP layer suppresses the body for the original HEAD.
++    // Range has no meaning for HEAD and must not turn the metadata into a 206.
++    const headers = new Headers(context.request.headers);
++    headers.delete('Range');
++    headers.delete('If-Range');
++    const request = new Request(context.request, { method: 'GET', headers });
++    return handle({ ...context, request }, kv);
++  }
++  return handle(context, kv);
+--- /dev/null
++++ b/tests/edgeone-head.test.mjs
+@@ -0,0 +1,70 @@
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import { createServer } from 'node:http';
++import { connect } from 'node:net';
++import { onRequest } from '../edge-functions/sub/[[path]].js';
++
++const sample = '#EXTM3U\n#EXTINF:-1,中文频道\nhttps://example.com/live.m3u8\n';
++const key = (prefix, id) => `${prefix}_${Buffer.from(id).toString('hex')}`;
++function context(method, format = 'm3u', enabled = true) {
++  const values = new Map([
++    [key('source', 'test'), JSON.stringify({ id: 'test' })],
++    [key('subscription', 'test'), JSON.stringify({ sourceId: 'test', enabled, expiresAt: null })],
++    [key('playlist', 'test'), JSON.stringify({ current: { text: sample } })],
++  ]);
++  return {
++    request: new Request(`https://example.com/sub/test/playlist.${format}`, { method, headers: { Range: 'bytes=0-6' } }),
++    env: { LIVE_KV: { get: async k => values.get(k) ?? null, put: async () => {}, delete: async () => {}, list: async () => ({ keys: [], complete: true }) } },
++  };
++}
++
++test('EdgeOne HEAD 入口保留完整表示供平台计算长度，忽略 Range；不绕过禁用控制', async () => {
++  for (const format of ['m3u', 'm3u8', 'txt', 'json']) {
++    const ctx = context('HEAD', format);
++    const head = await onRequest(ctx);
++    assert.equal(ctx.request.method, 'HEAD');
++    assert.equal(head.status, 200);
++    const bytes = new Uint8Array(await head.arrayBuffer());
++    assert.ok(bytes.length > 7);
++    assert.equal(head.headers.get('content-length'), String(bytes.length));
++    assert.equal(head.headers.has('content-range'), false);
++    const getContext = context('GET', format);
++    getContext.request.headers.delete('Range');
++    const get = await onRequest(getContext);
++    assert.deepEqual(bytes, new Uint8Array(await get.arrayBuffer()));
++  }
++  assert.equal((await onRequest(context('HEAD', 'm3u', false))).status, 403);
++  const range = await onRequest(context('GET'));
++  assert.equal(range.status, 206);
++  assert.equal(await range.text(), '#EXTM3U');
++});
++
++test('模拟按正文重算长度的 HTTP 层：HEAD 线上不发送正文，长度保留完整 GET 大小', async () => {
++  const server = createServer(async (req, res) => {
++    const result = await onRequest(context(req.method));
++    const body = Buffer.from(await result.arrayBuffer());
++    const headers = Object.fromEntries(result.headers);
++    // Reproduce the observed null-body length rewrite at the platform boundary.
++    headers['content-length'] = String(body.length);
++    res.writeHead(result.status, headers);
++    res.end(body); // HTTP server suppresses this body for the original HEAD.
++  });
++  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
++  try {
++    const raw = await new Promise((resolve, reject) => {
++      const chunks = [];
++      const socket = connect(server.address().port, '127.0.0.1', () => {
++        socket.write('HEAD /sub/test/playlist.m3u HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n');
++      });
++      socket.on('data', chunk => chunks.push(chunk));
++      socket.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
++      socket.on('error', reject);
++    });
++    const [headers, body] = raw.split('\r\n\r\n');
++    assert.match(headers, /HTTP\/1\.1 200/);
++    assert.match(headers, new RegExp(`content-length: ${Buffer.byteLength(sample)}\\r\\n`, 'i'));
++    assert.equal(body, '');
++  } finally {
++    await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
++  }
++});

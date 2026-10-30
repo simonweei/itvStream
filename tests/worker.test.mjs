@@ -14,7 +14,7 @@ class KV {
 }
 const key = (prefix, id) => prefix + '_' + Buffer.from(id).toString('hex');
 
-test('默认 Cron 每 10 分钟执行，全天单页扫描共 145 次；会话过期立即失效且每天清理', async () => {
+test('默认 Cron 每 10 分钟唤醒，未到期时全天只初始化扫描一次；会话过期立即失效且每天清理', async () => {
   const config = JSON.parse(await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8'));
   assert.deepEqual(config.triggers.crons, ['*/10 * * * *']);
   const kv = new KV(), start = 10 * 86400000, counts = { source_: 0, session_: 0 };
@@ -27,13 +27,28 @@ test('默认 Cron 每 10 分钟执行，全天单页扫描共 145 次；会话�
   for (let tick = 0; tick < 144; tick++) {
     await runDueUpdates(kv, env, { now: start + tick * 10 * 60000, fetcher: () => assert.fail('无来源时不应拉取') });
   }
-  assert.deepEqual(counts, { source_: 144, session_: 1 });
+  assert.deepEqual(counts, { source_: 1, session_: 1 });
   assert.equal(await kv.get('session_expired'), null);
   assert.ok(await kv.get(`session_${session.id}`));
   assert.equal(await readSession(new Request('https://example.com/api/session', { headers: { Cookie: `live_session=${token}` } }), env, kv, session.expiresAt), null);
   await runDueUpdates(kv, env, { now: start + 86400000 });
-  assert.deepEqual(counts, { source_: 145, session_: 2 });
+  assert.deepEqual(counts, { source_: 2, session_: 2 });
   assert.equal(await kv.get(`session_${session.id}`), null);
+});
+
+test('调度进行中新增来源的修订标记不被旧扫描覆盖，下一轮重新计算计划', async () => {
+  const kv = new KV(), now = 10 * 86400000;
+  const source = { id: 'daily', enabled: true, intervalDays: 1, updatedAt: 1, url: 'https://example.com/daily' };
+  await kv.put(key('source', 'daily'), JSON.stringify(source));
+  const fetcher = async url => {
+    if (url.endsWith('/daily')) {
+      await kv.put(key('source', 'new'), JSON.stringify({ ...source, id: 'new', url: 'https://example.com/new' }));
+      await kv.put('scheduler_revision', JSON.stringify({ value: 'changed-during-fetch' }));
+    }
+    return new Response('#EXTM3U\n#EXTINF:-1,A\nhttps://example.com/live\n');
+  };
+  assert.deepEqual((await runDueUpdates(kv, {}, { now, fetcher })).results.map(result => result.id), ['daily']);
+  assert.deepEqual((await runDueUpdates(kv, {}, { now, fetcher })).results.map(result => result.id), ['new']);
 });
 test('内置后台按各源间隔执行，无 HTTP 调度地址或密钥；未到期和停用源不更新', async () => {
   const kv = new KV(), now = 10 * 86400000, attempted = now - 86400000;

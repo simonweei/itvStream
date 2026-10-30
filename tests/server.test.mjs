@@ -227,6 +227,41 @@ test('KV 无效绑定与 list 异常返回具体诊断，日志不泄露环境�
   assert.match(state.json.errorId, /^[a-f0-9]{12}$/); assert.equal(logs.join().includes(env.CRON_SECRET), false);
   assert.equal(state.text.includes(env.CRON_SECRET), false);
 });
+test('更新计划遵守各源间隔；手动更新、改短周期、停用、新增和删除均使计划重新计算', async () => {
+  const kv = new MemoryKV(), c = client(kv), originalList = kv.list.bind(kv);
+  let scans = 0;
+  kv.list = async options => { if (options.prefix === 'source_') scans++; return originalList(options); };
+  await c.login();
+  const data = { id: 'hourly', name: '小时源', url: 'https://example.com/list', intervalMinutes: 60 };
+  await c.call('/api/sources', 'POST', data);
+  const run = async minutes => {
+    c.setTime(START + minutes * 60000);
+    const response = await c.call('/api/cron/refresh', 'POST', null, { Authorization: `Bearer ${env.CRON_SECRET}` });
+    assert.equal(response.status, 200);
+    return response.json.results.map(result => result.id);
+  };
+  assert.deepEqual(await run(0), []);
+  assert.equal(scans, 1);
+  assert.deepEqual(await run(20), []);
+  assert.equal(scans, 1);
+  // A manual refresh at minute 20 moves the automatic deadline to minute 80.
+  await c.call('/api/sources/hourly/refresh', 'POST');
+  assert.deepEqual(await run(30), []);
+  const rebuilt = scans;
+  assert.deepEqual(await run(60), []);
+  assert.equal(scans, rebuilt);
+  assert.deepEqual(await run(80), ['hourly']);
+  // Shortening the interval makes the source due earlier than the saved deadline.
+  await c.call('/api/sources/hourly', 'PUT', { ...data, enabled: true, intervalMinutes: 10 });
+  assert.deepEqual(await run(90), ['hourly']);
+  await c.call('/api/sources/hourly', 'PUT', { ...data, enabled: false, intervalMinutes: 10 });
+  assert.deepEqual(await run(100), []);
+  await c.call('/api/sources', 'POST', { ...data, id: 'new', intervalMinutes: 10 });
+  assert.deepEqual(await run(110), ['new']);
+  assert.equal((await c.call('/api/sources/new', 'DELETE')).status, 200);
+  assert.deepEqual(await run(120), []);
+});
+
 test('list 当日额度耗尽返回准确提示，已有订阅和会话读取不依赖 list', async t => {
   t.mock.method(console, 'error', () => {});
   const kv = new MemoryKV(), c = client(kv);

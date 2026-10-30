@@ -14,9 +14,9 @@ class KV {
 }
 const key = (prefix, id) => prefix + '_' + Buffer.from(id).toString('hex');
 
-test('默认 Cron 每 10 分钟唤醒，未到期时全天只初始化扫描一次；会话过期立即失效且每天清理', async () => {
+test('默认 Cron 每 6 小时唤醒，未到期时全天只初始化扫描一次；会话过期立即失效且每天清理', async () => {
   const config = JSON.parse(await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8'));
-  assert.deepEqual(config.triggers.crons, ['*/10 * * * *']);
+  assert.deepEqual(config.triggers.crons, ['0 */6 * * *']);
   const kv = new KV(), start = 10 * 86400000, counts = { source_: 0, session_: 0 };
   const originalList = kv.list.bind(kv);
   kv.list = async options => { counts[options.prefix]++; return originalList(options); };
@@ -24,8 +24,8 @@ test('默认 Cron 每 10 分钟唤醒，未到期时全天只初始化扫描一�
   const { session, token } = await newSession(env, start);
   await kv.put(`session_${session.id}`, JSON.stringify(session));
   await kv.put('session_expired', JSON.stringify({ id: 'expired', expiresAt: start - 1 }));
-  for (let tick = 0; tick < 144; tick++) {
-    await runDueUpdates(kv, env, { now: start + tick * 10 * 60000, fetcher: () => assert.fail('无来源时不应拉取') });
+  for (let tick = 0; tick < 4; tick++) {
+    await runDueUpdates(kv, env, { now: start + tick * 6 * 3600000, fetcher: () => assert.fail('无来源时不应拉取') });
   }
   assert.deepEqual(counts, { source_: 1, session_: 1 });
   assert.equal(await kv.get('session_expired'), null);
